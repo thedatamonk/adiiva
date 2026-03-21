@@ -3,6 +3,7 @@ Main fastAPI app that triggers execution
 of the Pipecat PipelineTask
 """
 
+import asyncio
 import sys
 
 from pathlib import Path
@@ -19,7 +20,7 @@ from .user_store import authenticate_user
 from .cost_estimator import estimate_cost
 from .metrics import MetricsCollector
 from .pipeline import create_pipeline
-from .rate_limiter import acquire_session_slot, release_session_slot
+from .rate_limiter import acquire_session_slot, refresh_session_ttl, release_session_slot
 from .session_manager import SessionManager
 
 load_dotenv(override=True)
@@ -85,6 +86,18 @@ async def websocket_talk(websocket: WebSocket, token: str = Query(None)):
         return
 
     session = session_mgr.create_session(session_id, user_id)
+
+    async def _heartbeat():
+        """Periodically refresh the Redis TTL so the session key
+        doesn't expire while the connection is still alive."""
+        try:
+            while True:
+                await asyncio.sleep(60)
+                await refresh_session_ttl(user_id)
+        except asyncio.CancelledError:
+            pass
+
+    heartbeat_task = asyncio.create_task(_heartbeat())
     try:
         logger.info(f"[{session_id}] Pipeline starting for user {user_id}")
         await create_pipeline(websocket, session_id, session.usage, metrics)
@@ -93,6 +106,7 @@ async def websocket_talk(websocket: WebSocket, token: str = Query(None)):
     except Exception as e:
         logger.error(f"[{session_id}] Pipeline error: {e}")
     finally:
+        heartbeat_task.cancel()
         await release_session_slot(user_id, session_id)
         summary = await session_mgr.remove_session(session_id)
         if summary:
