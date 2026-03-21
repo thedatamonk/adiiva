@@ -11,8 +11,12 @@ COPY pyproject.toml uv.lock ./
 # Install dependencies
 RUN uv sync --frozen --no-dev
 
-# Copy source code
+# Copy source code and static assets
 COPY src/ src/
+COPY static/ static/
+
+# Create logs directory
+RUN mkdir -p logs
 
 EXPOSE 8000
 
