@@ -24,12 +24,17 @@
     .btn-connect:hover:not(:disabled) { background: #16a34a; }
     .btn-disconnect { background: #ef4444; color: white; }
     .btn-disconnect:hover:not(:disabled) { background: #dc2626; }
+    .btn-mute { background: #334155; color: #e2e8f0; }
+    .btn-mute:hover:not(:disabled) { background: #475569; }
+    .btn-mute.active { background: #f59e0b; color: #0f172a; }
 
     .row { display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap; }
     .status { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.7rem; font-weight: 600; margin-left: 0.5rem; }
     .status-disconnected { background: #7f1d1d; color: #fca5a5; }
     .status-connected { background: #14532d; color: #86efac; }
     .status-connecting { background: #713f12; color: #fde047; }
+    .status-auth-ok { background: #14532d; color: #86efac; }
+    .status-auth-fail { background: #7f1d1d; color: #fca5a5; }
 
     .error-banner { background: #991b1b; color: #fecaca; padding: 0.75rem 1rem; border-radius: 8px; margin-top: 0.75rem; font-weight: 600; display: none; }
 
@@ -74,9 +79,14 @@
         <label for="userId">Username</label>
         <input type="text" id="userId" value="alice" placeholder="e.g. alice">
       </div>
+      <div>
+        <label for="userPassword">Password</label>
+        <input type="password" id="userPassword" value="alice123" placeholder="password">
+      </div>
       <button class="btn-connect" id="btnConnect" onclick="handleConnect()">Connect</button>
       <button class="btn-disconnect" id="btnDisconnect" onclick="handleDisconnect()" disabled>Disconnect</button>
       <span id="connStatus" class="status status-disconnected">Disconnected</span>
+      <span id="authStatus" class="status" style="display:none;"></span>
     </div>
     <div class="error-banner" id="errorBanner"></div>
   </div>
@@ -84,6 +94,10 @@
   <!-- Audio Visualizer -->
   <div class="panel">
     <div class="panel-title">Audio</div>
+    <div class="row" style="margin-bottom: 0.5rem;">
+      <button class="btn-mute" id="btnMuteMic" onclick="toggleMuteMic()" disabled>Mute Mic</button>
+      <button class="btn-mute" id="btnMuteBot" onclick="toggleMuteBot()" disabled>Mute Bot</button>
+    </div>
     <canvas id="visualizer" class="visualizer"></canvas>
   </div>
 
@@ -171,6 +185,8 @@ var metricsInterval = null;
 var playbackQueue = [];
 var isPlaying = false;
 var currentSource = null;
+var micMuted = false;
+var botMuted = false;
 
 // ─── UI Helpers ─────────────────────────────────────────────────────
 function log(msg, type = 'info') {
@@ -196,10 +212,55 @@ function hideError() {
   document.getElementById('errorBanner').style.display = 'none';
 }
 
+function setAuthStatus(state, text) {
+  const el = document.getElementById('authStatus');
+  if (!state) { el.style.display = 'none'; return; }
+  el.style.display = 'inline-block';
+  el.className = `status status-auth-${state}`;
+  el.textContent = text;
+}
+
 function setButtons(connected) {
   document.getElementById('btnConnect').disabled = connected;
   document.getElementById('btnDisconnect').disabled = !connected;
   document.getElementById('userId').disabled = connected;
+  document.getElementById('userPassword').disabled = connected;
+  document.getElementById('btnMuteMic').disabled = !connected;
+  document.getElementById('btnMuteBot').disabled = !connected;
+  if (!connected) {
+    micMuted = false;
+    botMuted = false;
+    document.getElementById('btnMuteMic').classList.remove('active');
+    document.getElementById('btnMuteMic').textContent = 'Mute Mic';
+    document.getElementById('btnMuteBot').classList.remove('active');
+    document.getElementById('btnMuteBot').textContent = 'Mute Bot';
+  }
+}
+
+// ─── Mute Toggles ───────────────────────────────────────────────────
+function toggleMuteMic() {
+  micMuted = !micMuted;
+  const btn = document.getElementById('btnMuteMic');
+  btn.classList.toggle('active', micMuted);
+  btn.textContent = micMuted ? 'Unmute Mic' : 'Mute Mic';
+  if (mediaStream) {
+    mediaStream.getAudioTracks().forEach(t => { t.enabled = !micMuted; });
+  }
+  log(micMuted ? 'Mic muted' : 'Mic unmuted', 'info');
+}
+
+function toggleMuteBot() {
+  botMuted = !botMuted;
+  const btn = document.getElementById('btnMuteBot');
+  btn.classList.toggle('active', botMuted);
+  btn.textContent = botMuted ? 'Unmute Bot' : 'Mute Bot';
+  if (botMuted && currentSource) {
+    try { currentSource.stop(); } catch (e) {}
+    playbackQueue = [];
+    isPlaying = false;
+    currentSource = null;
+  }
+  log(botMuted ? 'Bot audio muted' : 'Bot audio unmuted', 'info');
 }
 
 // ─── Connect ────────────────────────────────────────────────────────
@@ -208,22 +269,35 @@ async function handleConnect() {
   await protoReady;
   if (!Frame) { showError('Protobuf failed to load'); return; }
   const userId = document.getElementById('userId').value.trim();
+  const password = document.getElementById('userPassword').value;
   if (!userId) { showError('Enter a username'); return; }
+  if (!password) { showError('Enter a password'); return; }
 
   document.getElementById('usernameDisplay').textContent = userId;
   setStatus('connecting');
-  log('Requesting token...', 'info');
+  setAuthStatus('');
+  log('Authenticating...', 'info');
 
-  // 1. Get JWT
+  // 1. Authenticate and get JWT
   let token;
   try {
-    const res = await fetch(`/token?user_id=${encodeURIComponent(userId)}`, { method: 'POST' });
+    const res = await fetch(`/token?user_id=${encodeURIComponent(userId)}&password=${encodeURIComponent(password)}`, { method: 'POST' });
+    if (res.status === 401) {
+      const body = await res.json();
+      setAuthStatus('fail', body.detail || 'Invalid credentials');
+      showError('Authentication failed: ' + (body.detail || 'Invalid credentials'));
+      log('Authentication rejected', 'error');
+      setStatus('disconnected');
+      return;
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     token = data.access_token;
-    log('Token acquired', 'success');
+    setAuthStatus('ok', 'Authenticated');
+    log('Authenticated — token acquired', 'success');
   } catch (e) {
-    showError('Failed to get token: ' + e.message);
+    setAuthStatus('fail', 'Connection error');
+    showError('Failed to authenticate: ' + e.message);
     setStatus('disconnected');
     return;
   }
@@ -362,7 +436,7 @@ function startAudioCapture() {
 
 // ─── Audio Playback ─────────────────────────────────────────────────
 function playAudio(audioBytes, sampleRate, numChannels) {
-  if (!audioCtx) return;
+  if (!audioCtx || botMuted) return;
   // Copy to aligned buffer — protobuf may return odd byte offsets
   const aligned = new Uint8Array(audioBytes).buffer;
   const int16 = new Int16Array(aligned);

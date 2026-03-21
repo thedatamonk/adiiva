@@ -8,13 +8,14 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from uuid import uuid4
 
 from .auth import create_token, verify_token
+from .user_store import authenticate_user
 from .cost_estimator import estimate_cost
 from .metrics import MetricsCollector
 from .pipeline import create_pipeline
@@ -53,7 +54,9 @@ async def index():
 
 
 @app.post("/token")
-async def issue_token(user_id: str):
+async def issue_token(user_id: str, password: str):
+    if not authenticate_user(user_id, password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     token = create_token(user_id)
     return {"access_token": token, "token_type": "bearer"}
 
