@@ -1,10 +1,20 @@
 """
-All user tracking metrics are defined here. These are used for:
-- rate-limiting
-- LLM costs, tokens and other performance metrics
+Per-session usage accumulator and cost estimation.
+
+Tracks STT seconds, LLM tokens, and TTS characters for a single session,
+then estimates cost using provider rate constants.
 """
 from dataclasses import dataclass, field
 import time
+
+from pipecat.metrics.metrics import LLMUsageMetricsData, TTSUsageMetricsData
+
+# Provider rate constants
+DEEPGRAM_STT_PER_SECOND = 0.0058  # ~$0.0058/min Nova-2
+OPENAI_LLM_PER_PROMPT_TOKEN = 0.00000015  # gpt-4o-mini input
+OPENAI_LLM_PER_COMPLETION_TOKEN = 0.00000060  # gpt-4o-mini output
+CARTESIA_TTS_PER_CHAR = 0.00005  # Pro plan ~$0.00005/char
+
 
 @dataclass
 class UsageTracker:
@@ -37,15 +47,25 @@ class UsageTracker:
         self.tts_characters += characters
     
     def process_metrics(self, metrics_data: list):
-        """
-        """
-        from pipecat.metrics.metrics import LLMUsageMetricsData, TTSUsageMetricsData
-        
         for item in metrics_data:
             if isinstance(item, LLMUsageMetricsData):
                 self.add_llm_usage(item.value.prompt_tokens, item.value.completion_tokens)
             elif isinstance(item, TTSUsageMetricsData):
                 self.add_tts_usage(item.value)
+
+    def estimate_cost(self) -> dict:
+        stt_cost = self.stt_seconds * DEEPGRAM_STT_PER_SECOND
+        llm_cost = (
+            self.llm_prompt_tokens * OPENAI_LLM_PER_PROMPT_TOKEN
+            + self.llm_completion_tokens * OPENAI_LLM_PER_COMPLETION_TOKEN
+        )
+        tts_cost = self.tts_characters * CARTESIA_TTS_PER_CHAR
+        return {
+            "stt": round(stt_cost, 6),
+            "llm": round(llm_cost, 6),
+            "tts": round(tts_cost, 6),
+            "total": round(stt_cost + llm_cost + tts_cost, 6),
+        }
 
     def summary(self) -> dict:
         return {
@@ -54,5 +74,6 @@ class UsageTracker:
             "llm_prompt_tokens": self.llm_prompt_tokens,
             "llm_completion_tokens": self.llm_completion_tokens,
             "tts_characters": self.tts_characters,
-            "duration_seconds": round(time.time() - self.created_at, 2)
+            "duration_seconds": round(time.time() - self.created_at, 2),
+            "cost": self.estimate_cost(),
         }

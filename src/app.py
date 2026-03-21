@@ -17,7 +17,6 @@ from uuid import uuid4
 
 from .auth import create_token, verify_token
 from .user_store import authenticate_user
-from .cost_estimator import estimate_cost
 from .metrics import MetricsCollector
 from .pipeline import create_pipeline
 from .rate_limiter import acquire_session_slot, refresh_session_ttl, release_session_slot
@@ -110,11 +109,10 @@ async def websocket_talk(websocket: WebSocket, token: str = Query(None)):
         await release_session_slot(user_id, session_id)
         summary = await session_mgr.remove_session(session_id)
         if summary:
-            summary_with_cost = estimate_cost(summary)
-            metrics.record_completed_session(summary_with_cost)
+            metrics.record_completed_session(summary)
             logger.info(
                 f"[{session_id}] Session ended for user {user_id} | "
-                f"Usage: {summary_with_cost}"
+                f"Usage: {summary}"
             )
 
 
@@ -125,9 +123,9 @@ async def health():
 
 @app.get("/metrics")
 async def get_metrics():
-    active_sessions = []
-    for sid, session in session_mgr._sessions.items():
-        active_sessions.append(estimate_cost(session.usage.summary()))
+    active_sessions = [
+        session.usage.summary() for session in session_mgr._sessions.values()
+    ]
 
     return {
         **metrics.snapshot(),

@@ -28,8 +28,7 @@ from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketTransport,
 )
 
-from .latency_tracker import LatencyTracker
-from .metrics import MetricsCollector
+from .metrics import LatencyTracker, MetricsCollector
 from .usage_tracker import UsageTracker
 
 SAMPLE_RATE = 16000                                                                                                                                                   
