@@ -130,6 +130,8 @@ async def create_pipeline(websocket, session_id: str, usage: UsageTracker, metri
         )
     )
 
+    task.add_reached_downstream_filter((MetricsFrame, InputAudioRawFrame))
+
     latency = LatencyTracker(session_id, metrics)
     task.add_observer(latency.observer)
 
