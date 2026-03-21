@@ -6,17 +6,12 @@ import os
 import struct
 
 from loguru import logger
-from pipecat.adapters.schemas.tools_schema import FunctionSchema, ToolsSchema
+from pipecat.adapters.schemas.function_schema import FunctionSchema
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import (
-    InputAudioRawFrame,
-    LLMRunFrame,
-    MetricsFrame,
-    OutputAudioRawFrame,
-)
-from pipecat.services.llm_service import FunctionCallParams
-from pipecat.pipeline.runner import PipelineRunner
+from pipecat.frames.frames import LLMRunFrame, OutputAudioRawFrame, MetricsFrame, InputAudioRawFrame
 from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
@@ -26,19 +21,22 @@ from pipecat.processors.aggregators.llm_response_universal import (
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
+from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketParams,
     FastAPIWebsocketTransport,
 )
 
+from .latency_tracker import LatencyTracker
+from .metrics import MetricsCollector
 from .usage_tracker import UsageTracker
 
 SAMPLE_RATE = 16000                                                                                                                                                   
 CHANNELS = 1                                                                                                                                                        
 BYTES_PER_SAMPLE = 2  # 16-bit PCM
 
-async def create_pipeline(websocket, session_id: str, usage: UsageTracker):
+async def create_pipeline(websocket, session_id: str, usage: UsageTracker, metrics: MetricsCollector):
     """
     Create and run a Pipecat pipeline for a single websocket session
     """
@@ -128,9 +126,12 @@ async def create_pipeline(websocket, session_id: str, usage: UsageTracker):
         pipeline,
         params=PipelineParams(
             enable_metrics=True,         # performance metrics
-            enable_usage_metrics=True    # usage metrics 
+            enable_usage_metrics=True    # usage metrics
         )
     )
+
+    latency = LatencyTracker(session_id, metrics)
+    task.add_observer(latency.observer)
 
     # Usage tracking
     @task.event_handler("on_frame_reached_downstream")

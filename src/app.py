@@ -33,10 +33,10 @@ logger.add(
 logger.add(
     "logs/gateway.log",
     format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} | {message}",
-    level="DEBUG",
+    level="INFO",
     rotation="10 MB",
     retention="7 days",
-    serialize=True,  # JSON structured logs to file
+    serialize=False,
 )
 
 app = FastAPI(title="ADIIVA Voice AI Gateway")
@@ -84,7 +84,7 @@ async def websocket_talk(websocket: WebSocket, token: str = Query(None)):
     session = session_mgr.create_session(session_id, user_id)
     try:
         logger.info(f"[{session_id}] Pipeline starting for user {user_id}")
-        await create_pipeline(websocket, session_id, session.usage)
+        await create_pipeline(websocket, session_id, session.usage, metrics)
     except WebSocketDisconnect:
         logger.info(f"[{session_id}] WebSocket disconnected")
     except Exception as e:
