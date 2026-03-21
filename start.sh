@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
-# Copy .env.example to .env if it doesn't exist
+# Ensure .env exists
 if [ ! -f .env ]; then
-    cp .env.example .env
-    echo "Created .env from .env.example"
+    echo "Error: .env file not found. Run 'cp .env.example .env' and fill in your API keys first."
+    exit 1
 fi
 
 # Generate JWT_SECRET if empty or missing
