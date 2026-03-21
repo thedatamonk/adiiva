@@ -1,0 +1,16 @@
+[project]
+name = "adiiva"
+version = "0.1.0"
+description = "Adiiva Take Home Assignment"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pipecat-ai[webrtc,daily,silero,deepgram,openai,cartesia,runner,websocket]",
+    "pipecat-ai-cli",
+    "fastapi",
+    "uvicorn[standard]",
+    "python-jose[cryptography]",
+    "redis[hiredis]",
+    "python-multipart",
+    "aiofiles"
+]
