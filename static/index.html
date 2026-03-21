@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ADIIVA Voice AI Gateway</title>
+  <script src="https://cdn.jsdelivr.net/npm/protobufjs@7/dist/protobuf.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+    .container { max-width: 900px; margin: 0 auto; padding: 1.5rem; }
+    h1 { font-size: 1.4rem; color: #f8fafc; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; }
+    .username-display { font-size: 1.1rem; color: #38bdf8; font-weight: 700; }
+
+    .panel { background: #1e293b; border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; border: 1px solid #334155; }
+    .panel-title { font-size: 0.8rem; color: #64748b; margin-bottom: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+
+    label { display: block; font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.2rem; }
+    input { padding: 0.45rem 0.7rem; background: #0f172a; border: 1px solid #475569; border-radius: 6px; color: #e2e8f0; font-size: 0.85rem; width: 200px; }
+    button { padding: 0.45rem 1rem; border-radius: 6px; border: none; font-size: 0.8rem; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-connect { background: #22c55e; color: white; }
+    .btn-connect:hover:not(:disabled) { background: #16a34a; }
+    .btn-disconnect { background: #ef4444; color: white; }
+    .btn-disconnect:hover:not(:disabled) { background: #dc2626; }
+
+    .row { display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap; }
+    .status { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.7rem; font-weight: 600; margin-left: 0.5rem; }
+    .status-disconnected { background: #7f1d1d; color: #fca5a5; }
+    .status-connected { background: #14532d; color: #86efac; }
+    .status-connecting { background: #713f12; color: #fde047; }
+
+    .error-banner { background: #991b1b; color: #fecaca; padding: 0.75rem 1rem; border-radius: 8px; margin-top: 0.75rem; font-weight: 600; display: none; }
+
+    canvas.visualizer { width: 100%; height: 50px; background: #0f172a; border-radius: 6px; border: 1px solid #334155; }
+
+    #log { background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 0.6rem; height: 200px; overflow-y: auto; font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 0.7rem; line-height: 1.5; }
+    .log-info { color: #60a5fa; }
+    .log-error { color: #f87171; }
+    .log-success { color: #4ade80; }
+    .log-bot { color: #c084fc; }
+
+    .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+    .metric-card { background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 0.75rem; }
+    .metric-label { font-size: 0.7rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+    .metric-value { font-size: 1.1rem; font-weight: 700; color: #f8fafc; margin-top: 0.2rem; }
+    .metric-sub { font-size: 0.7rem; color: #94a3b8; margin-top: 0.15rem; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.75rem; margin-top: 0.5rem; }
+    th { text-align: left; color: #64748b; font-weight: 600; padding: 0.3rem 0.5rem; border-bottom: 1px solid #334155; }
+    td { padding: 0.3rem 0.5rem; border-bottom: 1px solid #1e293b; color: #cbd5e1; }
+
+    @media (max-width: 640px) {
+      .metrics-grid { grid-template-columns: 1fr; }
+      .row { flex-direction: column; align-items: stretch; }
+      input { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>ADIIVA Voice AI Gateway</h1>
+    <div class="username-display" id="usernameDisplay"></div>
+  </div>
+
+  <!-- Auth + Connection -->
+  <div class="panel">
+    <div class="panel-title">Connection</div>
+    <div class="row">
+      <div>
+        <label for="userId">Username</label>
+        <input type="text" id="userId" value="alice" placeholder="e.g. alice">
+      </div>
+      <button class="btn-connect" id="btnConnect" onclick="handleConnect()">Connect</button>
+      <button class="btn-disconnect" id="btnDisconnect" onclick="handleDisconnect()" disabled>Disconnect</button>
+      <span id="connStatus" class="status status-disconnected">Disconnected</span>
+    </div>
+    <div class="error-banner" id="errorBanner"></div>
+  </div>
+
+  <!-- Audio Visualizer -->
+  <div class="panel">
+    <div class="panel-title">Audio</div>
+    <canvas id="visualizer" class="visualizer"></canvas>
+  </div>
+
+  <!-- Log -->
+  <div class="panel">
+    <div class="panel-title">Log</div>
+    <div id="log"></div>
+  </div>
+
+  <!-- Metrics -->
+  <div class="panel">
+    <div class="panel-title">Metrics <span id="metricsAge" style="font-size:0.65rem;color:#475569;font-weight:400;"></span></div>
+    <div class="metrics-grid" id="metricsGrid">
+      <div class="metric-card">
+        <div class="metric-label">Active Sessions</div>
+        <div class="metric-value" id="metricActiveSessions">0</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Completed Sessions</div>
+        <div class="metric-value" id="metricCompletedSessions">0</div>
+      </div>
+    </div>
+    <div id="metricsDetail" style="margin-top:0.75rem;"></div>
+  </div>
+
+</div>
+
+<script>
+// ─── Protobuf Schema ───────────────────────────────────────────────
+const PROTO_DEF = `
+syntax = "proto3";
+package pipecat;
+
+message TextFrame {
+  uint64 id = 1;
+  string name = 2;
+  string text = 3;
+}
+message AudioRawFrame {
+  uint64 id = 1;
+  string name = 2;
+  bytes audio = 3;
+  uint32 sample_rate = 4;
+  uint32 num_channels = 5;
+  optional uint64 pts = 6;
+}
+message TranscriptionFrame {
+  uint64 id = 1;
+  string name = 2;
+  string text = 3;
+  string user_id = 4;
+  string timestamp = 5;
+}
+message MessageFrame {
+  string data = 1;
+}
+message Frame {
+  oneof frame {
+    TextFrame text = 1;
+    AudioRawFrame audio = 2;
+    TranscriptionFrame transcription = 3;
+    MessageFrame message = 4;
+  }
+}`;
+
+var Frame = null;
+var protoReady = new Promise((resolve) => {
+  try {
+    const parsed = protobuf.parse(PROTO_DEF, { keepCase: true });
+    Frame = parsed.root.lookupType('pipecat.Frame');
+    log('Protobuf schema loaded', 'info');
+  } catch (err) {
+    log('Protobuf load error: ' + err, 'error');
+  }
+  resolve();
+});
+
+// ─── State ──────────────────────────────────────────────────────────
+var ws = null;
+var audioCtx = null;
+var mediaStream = null;
+var scriptNode = null;
+var analyser = null;
+var metricsInterval = null;
+var playbackQueue = [];
+var isPlaying = false;
+var currentSource = null;
+
+// ─── UI Helpers ─────────────────────────────────────────────────────
+function log(msg, type = 'info') {
+  const el = document.getElementById('log');
+  const t = new Date().toLocaleTimeString();
+  el.innerHTML += `<div class="log-${type}">[${t}] ${msg}</div>`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(status) {
+  const el = document.getElementById('connStatus');
+  el.className = `status status-${status}`;
+  el.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorBanner');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function hideError() {
+  document.getElementById('errorBanner').style.display = 'none';
+}
+
+function setButtons(connected) {
+  document.getElementById('btnConnect').disabled = connected;
+  document.getElementById('btnDisconnect').disabled = !connected;
+  document.getElementById('userId').disabled = connected;
+}
+
+// ─── Connect ────────────────────────────────────────────────────────
+async function handleConnect() {
+  hideError();
+  await protoReady;
+  if (!Frame) { showError('Protobuf failed to load'); return; }
+  const userId = document.getElementById('userId').value.trim();
+  if (!userId) { showError('Enter a username'); return; }
+
+  document.getElementById('usernameDisplay').textContent = userId;
+  setStatus('connecting');
+  log('Requesting token...', 'info');
+
+  // 1. Get JWT
+  let token;
+  try {
+    const res = await fetch(`/token?user_id=${encodeURIComponent(userId)}`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    token = data.access_token;
+    log('Token acquired', 'success');
+  } catch (e) {
+    showError('Failed to get token: ' + e.message);
+    setStatus('disconnected');
+    return;
+  }
+
+  // 2. Get mic permission
+  try {
+    audioCtx = new AudioContext({ sampleRate: 16000 });
+    await audioCtx.resume();
+  } catch (e) {
+    showError('Audio initialization failed: ' + e.message);
+    setStatus('disconnected');
+    audioCtx = null;
+    return;
+  }
+
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
+    });
+    log('Microphone access granted', 'success');
+  } catch (e) {
+    showError('Microphone access denied: ' + e.message);
+    setStatus('disconnected');
+    if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+    return;
+  }
+
+  // 3. Open WebSocket
+  const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${wsProto}//${location.host}/ws/talk?token=${token}`);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    setStatus('connected');
+    setButtons(true);
+    log('WebSocket connected', 'success');
+    startAudioCapture();
+    startMetricsPolling();
+  };
+
+  ws.onmessage = (event) => {
+    if (!(event.data instanceof ArrayBuffer)) { log('Non-binary msg: ' + typeof event.data, 'info'); return; }
+    if (!Frame) { log('Frame not loaded yet', 'error'); return; }
+    try {
+      const frame = Frame.decode(new Uint8Array(event.data));
+      if (frame.audio && frame.audio.audio && frame.audio.audio.length > 0) {
+        log('Audio frame: ' + frame.audio.audio.length + ' bytes, sr=' + frame.audio.sample_rate, 'info');
+        playAudio(frame.audio.audio, frame.audio.sample_rate || 16000, frame.audio.num_channels || 1);
+      }
+      if (frame.text && frame.text.text) {
+        log('Bot: ' + frame.text.text, 'bot');
+      }
+      if (frame.transcription && frame.transcription.text) {
+        log('You: ' + frame.transcription.text, 'info');
+      }
+    } catch (e) {
+      log('Decode error: ' + e.message, 'error');
+    }
+  };
+
+  ws.onclose = (event) => {
+    if (event.code === 4001) {
+      showError(event.reason || 'Policy violation (4001)');
+      log('Rejected: ' + (event.reason || 'code 4001'), 'error');
+    } else {
+      log(`Disconnected (code ${event.code})`, 'info');
+    }
+    setStatus('disconnected');
+    setButtons(false);
+    cleanup();
+  };
+
+  ws.onerror = () => {
+    log('WebSocket error', 'error');
+  };
+}
+
+// ─── Disconnect ─────────────────────────────────────────────────────
+function handleDisconnect() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.close();
+  }
+  cleanup();
+}
+
+function cleanup() {
+  if (scriptNode) { scriptNode.disconnect(); scriptNode = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+  if (metricsInterval) { clearInterval(metricsInterval); metricsInterval = null; }
+  analyser = null;
+  ws = null;
+  playbackQueue = [];
+  isPlaying = false;
+  currentSource = null;
+}
+
+window.addEventListener('beforeunload', () => {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+});
+
+// ─── Audio Capture ──────────────────────────────────────────────────
+function startAudioCapture() {
+  if (!audioCtx || !mediaStream || !Frame) return;
+
+  const source = audioCtx.createMediaStreamSource(mediaStream);
+
+  // Visualizer
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 256;
+  source.connect(analyser);
+  drawVisualizer();
+
+  // Capture PCM via ScriptProcessor (deprecated but works everywhere, single-file constraint)
+  scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+  source.connect(scriptNode);
+  scriptNode.connect(audioCtx.destination);
+
+  scriptNode.onaudioprocess = (e) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const float32 = e.inputBuffer.getChannelData(0);
+    const int16 = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+      int16[i] = Math.max(-32768, Math.min(32767, Math.round(float32[i] * 32767)));
+    }
+    const frame = Frame.create({
+      audio: {
+        audio: new Uint8Array(int16.buffer),
+        sample_rate: 16000,
+        num_channels: 1,
+      }
+    });
+    ws.send(Frame.encode(frame).finish());
+  };
+}
+
+// ─── Audio Playback ─────────────────────────────────────────────────
+function playAudio(audioBytes, sampleRate, numChannels) {
+  if (!audioCtx) return;
+  // Copy to aligned buffer — protobuf may return odd byte offsets
+  const aligned = new Uint8Array(audioBytes).buffer;
+  const int16 = new Int16Array(aligned);
+  const float32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i++) {
+    float32[i] = int16[i] / 32768;
+  }
+  const buffer = audioCtx.createBuffer(numChannels, float32.length, sampleRate);
+  buffer.getChannelData(0).set(float32);
+  playbackQueue.push(buffer);
+  if (!isPlaying) drainQueue();
+}
+
+function drainQueue() {
+  if (playbackQueue.length === 0) { isPlaying = false; currentSource = null; return; }
+  isPlaying = true;
+  const buffer = playbackQueue.shift();
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioCtx.destination);
+  source.onended = () => drainQueue();
+  currentSource = source;
+  source.start();
+}
+
+// ─── Visualizer ─────────────────────────────────────────────────────
+function drawVisualizer() {
+  const canvas = document.getElementById('visualizer');
+  const ctx = canvas.getContext('2d');
+
+  function draw() {
+    requestAnimationFrame(draw);
+    if (!analyser) {
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+    const bufLen = analyser.frequencyBinCount;
+    const data = new Uint8Array(bufLen);
+    analyser.getByteFrequencyData(data);
+
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const barW = (canvas.width / bufLen) * 2.5;
+    let x = 0;
+    for (let i = 0; i < bufLen; i++) {
+      const h = (data[i] / 255) * canvas.height;
+      ctx.fillStyle = `hsl(${210 + data[i] * 0.4}, 80%, ${45 + data[i] / 6}%)`;
+      ctx.fillRect(x, canvas.height - h, barW, h);
+      x += barW + 1;
+    }
+  }
+  draw();
+}
+
+// ─── Metrics Polling ────────────────────────────────────────────────
+function startMetricsPolling() {
+  fetchMetrics();
+  metricsInterval = setInterval(fetchMetrics, 3000);
+}
+
+async function fetchMetrics() {
+  try {
+    const res = await fetch('/metrics');
+    const m = await res.json();
+    renderMetrics(m);
+  } catch (e) {
+    // silently ignore fetch errors
+  }
+}
+
+function renderMetrics(m) {
+  document.getElementById('metricActiveSessions').textContent = m.active_session_count || 0;
+  document.getElementById('metricCompletedSessions').textContent = (m.completed_sessions || []).length;
+  document.getElementById('metricsAge').textContent = 'updated ' + new Date().toLocaleTimeString();
+
+  let html = '';
+
+  // Active sessions table
+  if (m.active_sessions && m.active_sessions.length > 0) {
+    html += '<div class="panel-title" style="margin-bottom:0.3rem;">Active Sessions</div>';
+    html += '<table><tr><th>Session</th><th>STT (s)</th><th>LLM Tokens</th><th>TTS Chars</th><th>Cost ($)</th><th>Duration</th></tr>';
+    for (const s of m.active_sessions) {
+      html += `<tr>
+        <td>${s.session_id.substring(0, 8)}...</td>
+        <td>${s.stt_seconds}</td>
+        <td>${s.llm_prompt_tokens + s.llm_completion_tokens}</td>
+        <td>${s.tts_characters}</td>
+        <td>${s.cost ? s.cost.total.toFixed(6) : '—'}</td>
+        <td>${s.duration_seconds}s</td>
+      </tr>`;
+    }
+    html += '</table>';
+  }
+
+  // Completed sessions table
+  if (m.completed_sessions && m.completed_sessions.length > 0) {
+    html += '<div class="panel-title" style="margin-top:0.75rem;margin-bottom:0.3rem;">Completed Sessions</div>';
+    html += '<table><tr><th>Session</th><th>STT (s)</th><th>LLM Tokens</th><th>TTS Chars</th><th>Cost ($)</th><th>Duration</th></tr>';
+    for (const s of m.completed_sessions.slice(-5)) {
+      html += `<tr>
+        <td>${s.session_id.substring(0, 8)}...</td>
+        <td>${s.stt_seconds}</td>
+        <td>${s.llm_prompt_tokens + s.llm_completion_tokens}</td>
+        <td>${s.tts_characters}</td>
+        <td>${s.cost ? s.cost.total.toFixed(6) : '—'}</td>
+        <td>${s.duration_seconds}s</td>
+      </tr>`;
+    }
+    html += '</table>';
+  }
+
+  // Latency histogram
+  const h = m.latency_histogram;
+  if (h && h.count > 0) {
+    html += '<div class="panel-title" style="margin-top:0.75rem;margin-bottom:0.3rem;">Latency Histogram</div>';
+    html += `<table><tr><th>Count</th><th>Min</th><th>Max</th><th>Mean</th><th>p50</th><th>p95</th><th>p99</th></tr>`;
+    html += `<tr><td>${h.count}</td><td>${h.min}s</td><td>${h.max}s</td><td>${h.mean}s</td><td>${h.p50}s</td><td>${h.p95}s</td><td>${h.p99}s</td></tr>`;
+    html += '</table>';
+  }
+
+  document.getElementById('metricsDetail').innerHTML = html;
+}
+
+// Initial metrics fetch
+fetchMetrics();
+</script>
+</body>
+</html>
