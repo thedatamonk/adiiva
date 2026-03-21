@@ -46,10 +46,6 @@ class UsageTracker:
                 self.add_llm_usage(item.value.prompt_tokens, item.value.completion_tokens)
             elif isinstance(item, TTSUsageMetricsData):
                 self.add_tts_usage(item.value)
-            else:
-                # STT metrics are not present in Pipecat as Deepgram doesnt emit duration metrics
-                # TODO: We will have to calculate it from audio input frames later in the pipeline
-                raise NotImplementedError
 
     def summary(self) -> dict:
         return {
