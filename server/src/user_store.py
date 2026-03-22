@@ -22,9 +22,9 @@ def _seed_demo_users():
     Pre-populate a few demo users.
     """
     demo_users = {
-        "alice": "alice123",
-        "bob": "bob123",
-        "charlie": "charlie123",
+        "kalika": "kalika@adiiva",
+        "robin": "robin@adiiva",
+        "rohil": "rohil@adiiva",
     }
     for uid, pw in demo_users.items():
         _users[uid] = _hash_password(pw)
