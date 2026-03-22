@@ -30,7 +30,6 @@ class WebsocketClientApp {
   private debugLog: HTMLElement | null = null;
   private botAudio: HTMLAudioElement;
   private token: string = '';
-  private metricsInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     console.log('WebsocketClientApp');
@@ -75,7 +74,6 @@ class WebsocketClientApp {
         document.getElementById('session-panel')!.style.display = 'block';
         document.getElementById('logged-in-user')!.textContent = username;
         this.log(`Logged in as ${username}`);
-        this.startMetricsPolling();
       } catch (err) {
         errorEl.textContent = (err as Error).message;
       } finally {
@@ -261,85 +259,6 @@ class WebsocketClientApp {
       }
       this.pcClient = null;
     }
-  }
-
-  private startMetricsPolling(): void {
-    this.fetchMetrics();
-    this.metricsInterval = setInterval(() => this.fetchMetrics(), 3000);
-  }
-
-  private stopMetricsPolling(): void {
-    if (this.metricsInterval) {
-      clearInterval(this.metricsInterval);
-      this.metricsInterval = null;
-    }
-  }
-
-  private async fetchMetrics(): Promise<void> {
-    try {
-      const res = await fetch('/metrics');
-      const m = await res.json();
-      this.renderMetrics(m);
-    } catch (_) {
-      // silently ignore fetch errors
-    }
-  }
-
-  private renderMetrics(m: any): void {
-    const activeEl = document.getElementById('metric-active');
-    const completedEl = document.getElementById('metric-completed');
-    const ageEl = document.getElementById('metrics-age');
-    const detailEl = document.getElementById('metrics-detail');
-
-    if (activeEl) activeEl.textContent = m.active_session_count || 0;
-    if (completedEl) completedEl.textContent = (m.completed_sessions || []).length;
-    if (ageEl) ageEl.textContent = `updated ${new Date().toLocaleTimeString()}`;
-
-    let html = '';
-
-    const sessionRow = (s: any) => {
-      const c = s.cost || {};
-      return `<tr>
-        <td>${s.session_id.substring(0, 8)}...</td>
-        <td>${s.stt_seconds}</td>
-        <td>${s.llm_prompt_tokens + s.llm_completion_tokens}</td>
-        <td>${s.tts_characters}</td>
-        <td>$${c.stt?.toFixed(6) ?? '\u2014'}</td>
-        <td>$${c.llm?.toFixed(6) ?? '\u2014'}</td>
-        <td>$${c.tts?.toFixed(6) ?? '\u2014'}</td>
-        <td>$${c.total?.toFixed(6) ?? '\u2014'}</td>
-        <td>${s.duration_seconds}s</td>
-      </tr>`;
-    };
-
-    const tableHeader = '<table class="metrics-table"><tr><th>Session</th><th>STT (s)</th><th>LLM Tokens</th><th>TTS Chars</th><th>STT Cost</th><th>LLM Cost</th><th>TTS Cost</th><th>Total Cost</th><th>Duration</th></tr>';
-
-    // Active sessions
-    if (m.active_sessions && m.active_sessions.length > 0) {
-      html += '<div class="metrics-section-title">Active Sessions</div>';
-      html += tableHeader;
-      for (const s of m.active_sessions) html += sessionRow(s);
-      html += '</table>';
-    }
-
-    // Completed sessions
-    if (m.completed_sessions && m.completed_sessions.length > 0) {
-      html += '<div class="metrics-section-title">Completed Sessions</div>';
-      html += tableHeader;
-      for (const s of m.completed_sessions.slice(-5)) html += sessionRow(s);
-      html += '</table>';
-    }
-
-    // Latency histogram
-    const h = m.latency_histogram;
-    if (h && h.count > 0) {
-      html += '<div class="metrics-section-title">Latency Histogram</div>';
-      html += '<table class="metrics-table"><tr><th>Count</th><th>Min</th><th>Max</th><th>Mean</th><th>p50</th><th>p95</th><th>p99</th></tr>';
-      html += `<tr><td>${h.count}</td><td>${h.min}s</td><td>${h.max}s</td><td>${h.mean}s</td><td>${h.p50}s</td><td>${h.p95}s</td><td>${h.p99}s</td></tr>`;
-      html += '</table>';
-    }
-
-    if (detailEl) detailEl.innerHTML = html;
   }
 
   /**

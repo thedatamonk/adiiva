@@ -13,9 +13,13 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnec
 from loguru import logger
 from uuid import uuid4
 
+import json
+from pathlib import Path
+from fastapi.responses import FileResponse, StreamingResponse
+
 from .auth import create_token, verify_token
 from .user_store import authenticate_user
-from .metrics import MetricsCollector
+from .metrics_store import MetricsStore
 from .pipeline import create_pipeline
 from .rate_limiter import acquire_session_slot, refresh_session_ttl, release_session_slot
 from .session_manager import SessionManager
@@ -38,7 +42,7 @@ logger.add(
 
 app = FastAPI(title="ADIIVA Voice AI Gateway")
 session_mgr = SessionManager()
-metrics = MetricsCollector()
+store = MetricsStore()
 
 @app.post("/token")
 async def issue_token(user_id: str, password: str):
@@ -71,7 +75,8 @@ async def websocket_talk(websocket: WebSocket, token: str = Query(None)):
         await websocket.close(code=4001, reason="Concurrency limit exceeded")
         return
 
-    session = session_mgr.create_session(session_id, user_id)
+    session_mgr.create_session(session_id, user_id)
+    store.start_session(session_id, user_id)
 
     async def _heartbeat():
         """Periodically refresh the Redis TTL so the session key
@@ -86,7 +91,7 @@ async def websocket_talk(websocket: WebSocket, token: str = Query(None)):
     heartbeat_task = asyncio.create_task(_heartbeat())
     try:
         logger.info(f"[{session_id}] Pipeline starting for user {user_id}")
-        await create_pipeline(websocket, session_id, session.usage, metrics)
+        await create_pipeline(websocket, session_id, store)
     except WebSocketDisconnect:
         logger.info(f"[{session_id}] WebSocket disconnected")
     except Exception as e:
@@ -94,13 +99,9 @@ async def websocket_talk(websocket: WebSocket, token: str = Query(None)):
     finally:
         heartbeat_task.cancel()
         await release_session_slot(user_id, session_id)
-        summary = await session_mgr.remove_session(session_id)
-        if summary:
-            metrics.record_completed_session(summary)
-            logger.info(
-                f"[{session_id}] Session ended for user {user_id} | "
-                f"Usage: {summary}"
-            )
+        store.end_session(session_id)  # idempotent — safety net for abrupt disconnects
+        session_mgr.remove_session(session_id)
+        logger.info(f"[{session_id}] Session ended for user {user_id}")
 
 
 @app.get("/health")
@@ -110,15 +111,34 @@ async def health():
 
 @app.get("/metrics")
 async def get_metrics():
-    active_sessions = [
-        session.usage.summary() for session in session_mgr._sessions.values()
-    ]
+    return store.snapshot()
 
-    return {
-        **metrics.snapshot(),
-        "active_sessions": active_sessions,
-        "active_session_count": session_mgr.active_count(),
-    }
+
+ADMIN_HTML = Path(__file__).resolve().parent.parent / "static" / "admin.html"
+
+
+@app.get("/admin")
+async def admin_page():
+    return FileResponse(ADMIN_HTML, media_type="text/html")
+
+
+@app.get("/admin/events")
+async def admin_events():
+    queue = store.subscribe()
+
+    async def event_stream():
+        snapshot = store.snapshot()
+        yield f"event: snapshot\ndata: {json.dumps(snapshot)}\n\n"
+        try:
+            while True:
+                event = await queue.get()
+                yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            store.unsubscribe(queue)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 if __name__ == "__main__":
