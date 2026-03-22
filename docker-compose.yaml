@@ -1,16 +1,23 @@
 services:
-  app:
-    build: .
+  gateway:
+    build: ./server
     ports:
       - "8000:8000"
     env_file:
-      - .env
+      - ./server/.env
     environment:
       - REDIS_URL=redis://redis:6379
     depends_on:
       redis:
         condition: service_healthy
-  
+
+  client:
+    build: ./client
+    ports:
+      - "80:80"
+    depends_on:
+      - gateway
+
   redis:
     image: redis:8-alpine
     ports:
