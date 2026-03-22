@@ -1,6 +1,6 @@
 # ADIIVA Voice AI Gateway
 
-A high-concurrency, multi-user Voice AI Gateway. Users authenticate via JWT, connect over WebSocket, and talk to an AI assistant powered by Deepgram (STT), OpenAI (LLM), and Cartesia (TTS) — all orchestrated through Pipecat pipelines.
+A high-concurrency, multi-user Voice AI Gateway. Users authenticate via JWT, connect over WebSocket, and talk to an AI assistant powered by Deepgram (STT), OpenAI (LLM), and Cartesia (TTS), all orchestrated through Pipecat pipelines.
 
 Built with FastAPI, Redis, and a TypeScript client served via Nginx. Everything runs with one command via Docker Compose.
 
@@ -22,33 +22,33 @@ Open `http://localhost:5173`, login with a demo user, and click Connect.
 
 | Username | Password |
 |---|---|
-| alice | alice123 |
-| bob | bob123 |
-| charlie | charlie123 |
+| kalika | kalika@adiiva |
+| robin | robin@adiiva |
+| rohil | rohil@adiiva |
 
 ## Project Structure
 
 ```
 adiiva/
-├── server/                      # Backend — FastAPI + Pipecat
+├── server/                      # Backend - FastAPI + Pipecat
 │   ├── src/
-│   │   ├── app.py               # Gateway — auth, rate limiting, WebSocket, admin endpoints
+│   │   ├── app.py               # Gateway - auth, rate limiting, WebSocket, admin endpoints
 │   │   ├── pipeline.py          # Pipecat pipeline (STT → LLM → TTS) + Play Audio tool
 │   │   ├── session_manager.py   # Maps WebSocket sessions to metadata
-│   │   ├── observers.py         # LatencyBreakdownObserver — per-turn latency collection
+│   │   ├── observers.py         # LatencyBreakdownObserver - per-turn latency collection
 │   │   ├── metrics_store.py     # In-memory metrics store with SSE fan-out
 │   │   ├── auth.py              # JWT creation and verification
 │   │   ├── rate_limiter.py      # Redis-based per-user concurrency control
 │   │   └── user_store.py        # Demo user store with bcrypt
 │   ├── static/
-│   │   ├── admin.html           # Admin dashboard — real-time session metrics via SSE
+│   │   ├── admin.html           # Admin dashboard - real-time session metrics via SSE
 │   │   └── poem.wav             # Pre-recorded audio for Play Audio tool
 │   ├── tests/
 │   ├── Dockerfile
 │   ├── pyproject.toml
 │   └── .env.example
 │
-├── client/                      # Frontend — TypeScript + Vite + Nginx
+├── client/                      # Frontend - TypeScript + Vite + Nginx
 │   ├── src/
 │   │   ├── app.ts               # Login, WebSocket connect, audio playback
 │   │   └── style.css
@@ -69,45 +69,42 @@ Here's what happens when a user opens the app and starts talking:
 sequenceDiagram
     participant B as Browser
     participant N as Nginx
-    participant G as Gateway (FastAPI)
+    participant G as Gateway (FastAPI + Pipecat, same process)
     participant R as Redis
-    participant P as Pipecat Pipeline
 
-    Note over B,P: 1. Authentication
-    B->>N: POST /token (alice / alice123)
+    Note over B,G: 1. Authentication
+    B->>N: POST /token (username / password)
     N->>G: proxy request
     G->>G: verify password (bcrypt)
     G-->>N: { access_token: JWT }
     N-->>B: JWT token
 
-    Note over B,P: 2. WebSocket Connection
+    Note over B,G: 2. WebSocket Connection + Pipeline Setup
     B->>N: WebSocket /ws/talk?token=JWT
     N->>G: proxy WebSocket upgrade
     G->>G: verify JWT (local HMAC)
     G->>R: check rate limit (Lua: SCARD + SADD)
     R-->>G: allowed
     G->>G: create session in SessionManager
-    G->>P: start Pipecat pipeline
+    G->>G: create_pipeline() - new STT, LLM, TTS instances
 
-    Note over B,P: 3. Voice Conversation (bidirectional audio streaming)
+    Note over B,G: 3. Voice Conversation (bidirectional audio streaming)
     B->>N: audio frames (protobuf)
-    N->>G: proxy
-    G->>P: forward to pipeline
-    P->>P: Deepgram STT → "Hello"
-    P->>P: OpenAI LLM → response (1-2 sentences)
-    P->>P: Cartesia TTS → audio
-    P-->>G: audio frames
-    G-->>N: forward
+    N->>G: Pipecat transport reads from WebSocket
+    G->>G: Deepgram STT → "Hello"
+    G->>G: OpenAI LLM → response (1-2 sentences)
+    G->>G: Cartesia TTS → audio
+    G->>N: Pipecat transport writes to WebSocket
     N-->>B: bot speaks
 
-    Note over B,P: 4. Disconnect & Cleanup
+    Note over B,G: 4. Disconnect & Cleanup
     B->>N: close WebSocket
     N->>G: proxy close
     G->>R: release session slot (SREM)
-    G->>G: record session metrics
+    G->>G: record session metrics, remove session
 ```
 
-The key thing: once the WebSocket connects, audio flows directly between the browser and the Pipecat pipeline. The gateway handles auth and rate limiting upfront, then gets out of the way.
+The gateway and the Pipecat pipeline run in the same FastAPI process. The `/ws/talk` handler acts as a per-session lifecycle manager: it authenticates, checks rate limits, creates an independent pipeline, and then `await`s until the session ends. Pipecat's `FastAPIWebsocketTransport` takes over the WebSocket for all audio I/O, so the gateway handler itself does no work during streaming, but the process and event loop are shared across all sessions.
 
 ## What's Inside
 
@@ -115,26 +112,36 @@ The key thing: once the WebSocket connects, audio flows directly between the bro
 JWT-based. Hit `POST /token` with username + password, get a token back. The token goes as a query param on the WebSocket upgrade (`/ws/talk?token=...`). Invalid or missing tokens get closed with code `4001`.
 
 ### Rate Limiting
-Redis-backed concurrency cap — each user gets max 2 simultaneous sessions (configurable). Uses a Lua script for atomic check-and-set. If you exceed the limit, the WebSocket closes with code `4001` and the client shows a message.
+Redis-backed concurrency cap: each user gets max 2 simultaneous sessions (configurable). Uses a Lua script for atomic check-and-set. If you exceed the limit, the WebSocket closes with code `4001` and the client shows a message.
 
 ### The Pipeline
-Each session gets its own Pipecat pipeline:
+Each WebSocket connection gets its own, fully independent Pipecat pipeline with dedicated service instances:
 
 **Deepgram** (STT) → **OpenAI** (LLM) → **Cartesia** (TTS)
 
-The LLM keeps responses to 1-2 sentences, plain text only (no markdown — TTS would read the symbols aloud). It also has a `play_audio` tool that plays a pre-recorded poem when asked.
+Nothing is shared between sessions: each pipeline has its own STT, LLM (with its own conversation context), TTS, transport, and observer. If the same user connects from two browser tabs, they get two completely separate pipelines with separate conversations.
 
-### Tool Calling — Play Audio
-When the user asks for a poem or nursery rhyme, the LLM calls the `play_audio` tool. The gateway says "Sure, here's a poem for you" (via TTS filler speech), then streams raw PCM audio from a WAV file directly to the client — bypassing TTS entirely.
+All pipelines run as async coroutines on a single event loop within one FastAPI process. This works because STT, LLM, and TTS calls are I/O-bound.
 
-### Session Management
-`SessionManager` maps active WebSocket connections to session metadata. On disconnect, cleanup happens automatically — rate limit slots are released, and the observer marks the session as completed in the metrics store.
+The LLM keeps responses to 1-2 sentences, plain text only (no markdown, since TTS would read the symbols aloud). It also has a `play_audio` tool: when the user asks for a poem or nursery rhyme, the LLM triggers the tool, TTS plays a filler phrase ("Sure, here's a poem for you"), and then raw PCM audio from a WAV file is streamed directly to the client, bypassing TTS entirely.
+
+### Current Limitations
+
+The current architecture runs the gateway and all Pipecat pipelines in a single FastAPI process on a single asyncio event loop. This has practical consequences:
+
+1. **Single event loop contention.** All concurrent sessions share one thread. I/O-bound work (STT/LLM/TTS network calls) cooperates fine via `await`, but any CPU-bound work (e.g., Silero VAD inference, SmartTurn analysis) blocks the entire event loop. While one user's VAD is running, no other user's audio frames get processed.
+
+2. **Scale ceiling.** The number of concurrent sessions is limited by what one Python process can handle. As sessions increase, coroutines contend for event loop time, and latency degrades across all users.
+
+3. **Blast radius.** An unhandled exception or segfault in any part of the process takes down all active sessions, not just the affected one.
+
+4. **Memory pressure.** Each pipeline holds its own STT, LLM, TTS service objects, audio buffers, and LLM conversation context. All of this lives in one process's memory space.
 
 ### Observability
-- **Admin dashboard (`/admin`)** — Real-time session metrics page powered by Server-Sent Events (SSE). Shows a latency histogram (min/max/mean/p50/p95/p99) across all sessions, and per-session collapsible cards with turn-by-turn breakdowns (STT TTFB, Smart Turn, LLM TTFB, TTS TTFB, wall clock, LLM tokens, TTS chars). Updates live as conversations happen — no polling.
-- **`LatencyBreakdownObserver`** — Custom Pipecat observer that collects per-turn latency data by watching pipeline frames (VAD, Metrics, BotStartedSpeaking). Writes to the shared `MetricsStore` and prints a summary table to the server console at session end.
-- **`/metrics` endpoint** — JSON snapshot of the same data: latency histogram, active sessions, and completed sessions. Useful for programmatic access or external monitoring.
-- **Langfuse integration** (optional) — Set `ENABLE_TRACING=true` to export OpenTelemetry traces to Langfuse. Every pipeline processor (STT, LLM, TTS) emits spans with token counts and durations.
+- **Admin dashboard:** Visit `/admin` for a real-time metrics page (SSE-powered). Shows a latency histogram across all sessions and per-session turn-by-turn breakdowns (STT TTFB, LLM TTFB, TTS TTFB, wall clock, token counts).
+- **Server logs:** Structured logs written to `server/logs/gateway.log` (rotated at 10 MB, retained 7 days) and stderr. Includes session lifecycle events, pipeline errors, and tool calls.
+- **`/metrics` endpoint:** JSON snapshot of the same dashboard data. Useful for programmatic access or external monitoring.
+- **Langfuse tracing** (optional): Set `ENABLE_TRACING=true` to export OpenTelemetry traces. Each pipeline processor (STT, LLM, TTS) emits spans with token counts and durations, visible in your Langfuse dashboard grouped by session ID.
 
 ## Environment Variables
 
@@ -154,11 +161,11 @@ When the user asks for a poem or nursery rhyme, the LLM calls the `play_audio` t
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/token` | POST | Issue JWT token (query params: `user_id`, `password`) |
+| `/token` | POST | Issue JWT token (params: `user_id`, `password`) |
 | `/ws/talk` | WebSocket | Voice AI session (query param: `token`) |
 | `/health` | GET | Health check with active session count |
-| `/metrics` | GET | JSON snapshot — latency histogram, active/completed sessions |
-| `/admin` | GET | Admin dashboard — real-time session metrics via SSE |
+| `/metrics` | GET | JSON snapshot: latency histogram, active/completed sessions |
+| `/admin` | GET | Admin dashboard: real-time session metrics via SSE |
 | `/admin/events` | GET (SSE) | Server-Sent Events stream for the admin dashboard |
 
 ## Development
@@ -190,38 +197,31 @@ cd server
 uv run pytest tests/ -v
 ```
 
-## Scaling Strategy (5,000+ Concurrent Calls)
+## Scaling, Resilience, and Optimization
 
-The current architecture runs everything in a single FastAPI process. To scale beyond that:
+### Optimization
+The hot path is: audio in → STT → LLM → TTS → audio out.
 
-1. **Separate gateway from pipeline workers** — The gateway (auth, rate limiting, session routing) becomes a lightweight HTTP service. Pipeline workers are standalone processes, each running one Pipecat session. The gateway spawns workers and returns a direct WebSocket URL to the client — taking itself out of the audio path entirely.
+**What we optimized:**
+- **Connection-time-only overhead.** Auth and rate limiting happen once at WebSocket upgrade, never during audio streaming. No per-frame checks, no middleware in the audio path.
+- **Local JWT verification.** HMAC validation with a shared secret. No Redis lookup, no database call, no external token introspection.
+- **Atomic rate limiting.** A single Lua script on Redis does SCARD + SADD in one round-trip. No lock contention, no multi-step check-then-set.
 
-2. **Horizontal scaling** — Run multiple gateway instances behind a load balancer. Workers scale independently based on demand. Redis remains the shared state layer for rate limiting and session tracking.
+### Resilience
 
-3. **Container orchestration** — Kubernetes or ECS for autoscaling workers based on active session count. Each worker pod runs one pipeline — a crash affects only one user.
+**Implemented:**
+- **Session-level isolation.** Each session runs in its own coroutine with its own pipeline instances. An exception in one session is caught and cleaned up without crashing others.
+- **Stale session recovery.** Rate limit slots in Redis have a 5-minute TTL refreshed by a per-session heartbeat. If the server crashes and cleanup doesn't run, slots expire automatically so users aren't permanently locked out.
+- **Health endpoint.** `/health` reports active session count, usable by a load balancer to route away from unhealthy instances.
 
-4. **CDN for the client** — In production, the built client (static HTML/JS/CSS) goes on a CDN (CloudFront, Vercel). Zero compute cost, instant global delivery.
+**Not implemented:**
+- **Per-provider timeouts.** If Deepgram, OpenAI, or Cartesia becomes slow or unresponsive, the affected pipeline coroutine blocks on the network call. The session hangs until the user disconnects.
+- **Circuit breakers.** Repeated failures to a provider don't trigger fast-fail. Every new request still attempts the call, even if the provider is down.
+- **Graceful degradation.** No fallback paths exist (e.g., sending the LLM response as text if TTS fails, or pausing STT processing while the provider recovers).
+- **System-wide load protection.** The per-user rate limit caps sessions per user, but nothing caps total system load. The process can be overwhelmed if many users connect simultaneously.
 
-## Resilience — Circuit Breaker Logic
-
-If an upstream AI provider (Deepgram, OpenAI, Cartesia) goes down or becomes slow:
-
-1. **Per-provider timeouts** — Each service call has a deadline. If Deepgram doesn't respond in 5s, the turn is dropped rather than blocking the pipeline.
-
-2. **Circuit breaker pattern** — After N consecutive failures to a provider, the circuit opens and requests fail fast for a cooldown period. This prevents cascading failures where a slow STT provider backs up the entire pipeline.
-
-3. **Graceful degradation** — If TTS fails, the LLM response can be sent as text. If STT fails, the session stays open but pauses processing until the service recovers.
-
-4. **Health checks** — The `/health` endpoint reports active session count. A load balancer can route away from unhealthy instances.
-
-## Optimization — Minimizing Hot-Path Overhead
-
-The hot path is: audio in → STT → LLM → TTS → audio out. Every millisecond counts.
-
-1. **JWT verification is local** — HMAC validation, no Redis or network call. Happens once at WebSocket upgrade, never during audio streaming.
-
-2. **Rate limiting is atomic** — Single Lua script on Redis (SCARD + SADD). One round-trip, no lock contention. Only checked at connection time, not per-frame.
-
-3. **Gateway is not in the audio path** — After auth and session setup, audio flows directly between the browser and the Pipecat pipeline over WebSocket. The gateway does zero work during streaming.
-
-4. **Pipecat's streaming architecture** — STT, LLM, and TTS run as pipeline processors with async frame passing. LLM tokens stream to TTS as they arrive — the bot starts speaking before the full response is generated.
+### Scaling to 5,000+ Concurrent Calls
+The [current limitations](#current-limitations) are addressed by separating the gateway from pipeline workers:
+- The gateway becomes a lightweight auth/routing service.
+- Pipeline workers are standalone processes, each running one Pipecat session. The gateway returns a direct WebSocket URL to the client, taking itself out of the audio path entirely.
+- Workers and gateway can scale independently.
