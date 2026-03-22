@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ADIIVA Voice AI Gateway</title>
+</head>
+
+<body>
+<div class="container">
+  <div id="login-panel" class="login-panel">
+    <h3>Login</h3>
+    <form id="login-form">
+      <input type="text" id="username" placeholder="Username" required />
+      <input type="password" id="password" placeholder="Password" required />
+      <button type="submit" id="login-btn">Login</button>
+    </form>
+    <div id="login-error" class="login-error"></div>
+  </div>
+
+  <div id="session-panel" style="display: none;">
+    <div class="status-bar">
+      <div class="status">
+        Logged in as: <span id="logged-in-user"></span> |
+        Transport: <span id="connection-status">Disconnected</span>
+      </div>
+      <div class="controls">
+        <button id="connect-btn">Connect</button>
+        <button id="disconnect-btn" disabled>Disconnect</button>
+      </div>
+    </div>
+
+    <audio id="bot-audio" autoplay></audio>
+
+    <div class="debug-panel">
+      <h3>Debug Info</h3>
+      <div id="debug-log"></div>
+    </div>
+
+    <div class="metrics-panel">
+      <h3>Metrics <span id="metrics-age" class="metrics-age"></span></h3>
+      <div class="metrics-summary">
+        <div class="metric-card">
+          <div class="metric-label">Active Sessions</div>
+          <div class="metric-value" id="metric-active">0</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Completed Sessions</div>
+          <div class="metric-value" id="metric-completed">0</div>
+        </div>
+      </div>
+      <div id="metrics-detail"></div>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/src/app.ts"></script>
+<link rel="stylesheet" href="/src/style.css">
+</body>
+
+</html>

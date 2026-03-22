@@ -5,14 +5,13 @@ description = "Adiiva Take Home Assignment"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "pipecat-ai[webrtc,daily,silero,deepgram,openai,cartesia,runner,websocket]",
-    "pipecat-ai-cli",
+    "pipecat-ai[silero,deepgram,openai,cartesia,runner,websocket,tracing]",
+    "opentelemetry-exporter-otlp-proto-http",
     "fastapi",
     "uvicorn[standard]",
     "python-jose[cryptography]",
     "redis[hiredis]",
     "python-multipart",
-    "aiofiles",
     "bcrypt>=4.0.0",
     "python-dotenv",
     "loguru"
