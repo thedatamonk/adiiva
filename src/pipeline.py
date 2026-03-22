@@ -6,6 +6,8 @@ import os
 import struct
 
 from loguru import logger
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from pipecat.utils.tracing.setup import setup_tracing
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -30,6 +32,25 @@ from pipecat.transports.websocket.fastapi import (
 
 from .metrics import LatencyTracker, MetricsCollector
 from .usage_tracker import UsageTracker
+from dotenv import load_dotenv
+
+
+load_dotenv(override=True)
+
+IS_TRACING_ENABLED = bool(os.getenv("ENABLE_TRACING"))
+
+# Initialize tracing if enabled
+if IS_TRACING_ENABLED:
+    # Create the exporter
+    otlp_exporter = OTLPSpanExporter()
+
+    # Set up tracing with the exporter
+    setup_tracing(
+        service_name="pipecat-adiiva",
+        exporter=otlp_exporter,
+        console_export=bool(os.getenv("OTEL_CONSOLE_EXPORT")),
+    )
+    logger.info("OpenTelemetry tracing initialized")
 
 SAMPLE_RATE = 16000                                                                                                                                                   
 CHANNELS = 1                                                                                                                                                        
@@ -125,8 +146,11 @@ async def create_pipeline(websocket, session_id: str, usage: UsageTracker, metri
         pipeline,
         params=PipelineParams(
             enable_metrics=True,         # performance metrics
-            enable_usage_metrics=True    # usage metrics
-        )
+            enable_usage_metrics=True,   # usage metrics
+        ),
+        enable_tracing=IS_TRACING_ENABLED,
+        conversation_id=session_id,
+        additional_span_attributes={"langfuse.session_id": session_id}
     )
 
     task.add_reached_downstream_filter((MetricsFrame, InputAudioRawFrame))

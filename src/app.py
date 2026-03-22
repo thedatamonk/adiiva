@@ -3,10 +3,12 @@ Main fastAPI app that triggers execution
 of the Pipecat PipelineTask
 """
 
+from dotenv import load_dotenv
+load_dotenv(override=True)
+
 import asyncio
 import sys
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from loguru import logger
 from uuid import uuid4
@@ -17,8 +19,6 @@ from .metrics import MetricsCollector
 from .pipeline import create_pipeline
 from .rate_limiter import acquire_session_slot, refresh_session_ttl, release_session_slot
 from .session_manager import SessionManager
-
-load_dotenv(override=True)
 
 logger.remove()
 logger.add(

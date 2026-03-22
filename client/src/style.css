@@ -133,7 +133,7 @@ button:disabled {
 }
 
 #debug-log {
-    height: 500px;
+    height: 300px;
     overflow-y: auto;
     background-color: #f8f8f8;
     padding: 10px;
@@ -141,4 +141,78 @@ button:disabled {
     font-family: monospace;
     font-size: 12px;
     line-height: 1.4;
+}
+
+.metrics-panel {
+    background-color: #fff;
+    border-radius: 8px;
+    padding: 20px;
+    margin-top: 20px;
+}
+
+.metrics-panel h3 {
+    margin: 0 0 12px 0;
+    font-size: 16px;
+    font-weight: bold;
+}
+
+.metrics-age {
+    font-size: 11px;
+    color: #999;
+    font-weight: normal;
+}
+
+.metrics-summary {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.metric-card {
+    background-color: #f8f8f8;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 12px 16px;
+    flex: 1;
+}
+
+.metric-label {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.metric-value {
+    font-size: 24px;
+    font-weight: 700;
+    margin-top: 4px;
+}
+
+.metrics-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    margin-top: 8px;
+}
+
+.metrics-table th {
+    text-align: left;
+    color: #888;
+    font-weight: 600;
+    padding: 6px 8px;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.metrics-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.metrics-section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #555;
+    margin-top: 16px;
+    margin-bottom: 4px;
 }
