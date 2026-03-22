@@ -14,7 +14,7 @@ services:
   client:
     build: ./client
     ports:
-      - "80:80"
+      - "5173:80"
     depends_on:
       - gateway
 
