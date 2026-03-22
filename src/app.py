@@ -6,12 +6,8 @@ of the Pipecat PipelineTask
 import asyncio
 import sys
 
-from pathlib import Path
-
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from uuid import uuid4
 
@@ -43,15 +39,6 @@ logger.add(
 app = FastAPI(title="ADIIVA Voice AI Gateway")
 session_mgr = SessionManager()
 metrics = MetricsCollector()
-
-STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
-
-@app.get("/")
-async def index():
-    return FileResponse(str(STATIC_DIR / "index.html"))
-
 
 @app.post("/token")
 async def issue_token(user_id: str, password: str):
