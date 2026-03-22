@@ -1,26 +1,25 @@
 """
-Main fastAPI app that triggers execution
-of the Pipecat PipelineTask
+Voice AI Gateway — handles auth, rate limiting, and worker spawning.
+Does NOT run pipelines directly.
 """
 
 import asyncio
+import json
+import os
+import subprocess
 import sys
 
-from pathlib import Path
-
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, HTTPException, Header
 from loguru import logger
+from typing import Optional
 from uuid import uuid4
+
+import redis.asyncio as redis
 
 from .auth import create_token, verify_token
 from .user_store import authenticate_user
-from .metrics import MetricsCollector
-from .pipeline import create_pipeline
-from .rate_limiter import acquire_session_slot, refresh_session_ttl, release_session_slot
-from .session_manager import SessionManager
+from .rate_limiter import acquire_session_slot
 
 load_dotenv(override=True)
 
@@ -41,16 +40,46 @@ logger.add(
 )
 
 app = FastAPI(title="ADIIVA Voice AI Gateway")
-session_mgr = SessionManager()
-metrics = MetricsCollector()
 
-STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+WORKER_BASE_PORT = int(os.getenv("WORKER_BASE_PORT", "9000"))
+GATEWAY_HOST = os.getenv("GATEWAY_HOST", "localhost")
+WORKER_READY_TIMEOUT = 5  # seconds to wait for worker to register in Redis
+
+_redis: Optional[redis.Redis] = None
 
 
-@app.get("/")
-async def index():
-    return FileResponse(str(STATIC_DIR / "index.html"))
+async def get_redis() -> redis.Redis:
+    global _redis
+    if _redis is None:
+        _redis = redis.from_url(REDIS_URL, decode_responses=True)
+    return _redis
+
+
+_next_port = WORKER_BASE_PORT
+
+
+async def get_next_port() -> int:
+    """Return the next port using an in-memory counter. Simple and race-free
+    within a single gateway process."""
+    global _next_port
+    port = _next_port
+    _next_port += 1
+    return port
+
+
+async def wait_for_worker_ready(session_id: str, timeout: float = WORKER_READY_TIMEOUT) -> bool:
+    """Poll Redis until the worker registers or timeout."""
+    redis_client = await get_redis()
+    key = f"worker:{session_id}"
+    elapsed = 0.0
+    interval = 0.1
+    while elapsed < timeout:
+        if await redis_client.exists(key):
+            return True
+        await asyncio.sleep(interval)
+        elapsed += interval
+    return False
 
 
 @app.post("/token")
@@ -61,76 +90,83 @@ async def issue_token(user_id: str, password: str):
     return {"access_token": token, "token_type": "bearer"}
 
 
-@app.websocket("/ws/talk")
-async def websocket_talk(websocket: WebSocket, token: str = Query(None)):
+@app.post("/connect")
+async def connect(authorization: Optional[str] = Header(None)):
+    # Auth
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
 
-    # Authentication using JWT
-    if not token:
-        await websocket.close(code=4001, reason="Missing token")
-        return
-
+    token = authorization.split(" ", 1)[1]
     user_id = verify_token(token)
     if not user_id:
-        await websocket.close(code=4001, reason="Invalid or expired token")
-        return
-
-    await websocket.accept()
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     session_id = str(uuid4())
 
-    # Check # of concurrent sessions for this user
+    # Rate limit
     allowed = await acquire_session_slot(user_id, session_id)
     if not allowed:
-        await websocket.close(code=4001, reason="Concurrency limit exceeded")
-        return
+        raise HTTPException(status_code=429, detail="Concurrency limit exceeded")
 
-    session = session_mgr.create_session(session_id, user_id)
+    # Pick a port
+    port = await get_next_port()
 
-    async def _heartbeat():
-        """Periodically refresh the Redis TTL so the session key
-        doesn't expire while the connection is still alive."""
-        try:
-            while True:
-                await asyncio.sleep(60)
-                await refresh_session_ttl(user_id)
-        except asyncio.CancelledError:
-            pass
+    # Spawn worker
+    process = subprocess.Popen(
+        [
+            sys.executable, "-m", "src.worker",
+            "--port", str(port),
+            "--session-id", session_id,
+            "--user-id", user_id,
+        ],
+        env={**os.environ},
+    )
 
-    heartbeat_task = asyncio.create_task(_heartbeat())
-    try:
-        logger.info(f"[{session_id}] Pipeline starting for user {user_id}")
-        await create_pipeline(websocket, session_id, session.usage, metrics)
-    except WebSocketDisconnect:
-        logger.info(f"[{session_id}] WebSocket disconnected")
-    except Exception as e:
-        logger.error(f"[{session_id}] Pipeline error: {e}")
-    finally:
-        heartbeat_task.cancel()
+    logger.info(f"[{session_id}] Spawned worker PID={process.pid} on port {port} for user {user_id}")
+
+    # Wait for worker to register
+    ready = await wait_for_worker_ready(session_id)
+    if not ready:
+        logger.error(f"[{session_id}] Worker failed to register in time, killing PID={process.pid}")
+        process.kill()
+        from .rate_limiter import release_session_slot
         await release_session_slot(user_id, session_id)
-        summary = await session_mgr.remove_session(session_id)
-        if summary:
-            metrics.record_completed_session(summary)
-            logger.info(
-                f"[{session_id}] Session ended for user {user_id} | "
-                f"Usage: {summary}"
-            )
+        raise HTTPException(status_code=503, detail="Worker failed to start")
+
+    worker_url = f"ws://{GATEWAY_HOST}:{port}"
+    logger.info(f"[{session_id}] Worker ready at {worker_url}")
+
+    return {"worker_url": worker_url, "session_id": session_id}
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "active_sessions": session_mgr.active_count()}
+    redis_client = await get_redis()
+    count = 0
+    async for _ in redis_client.scan_iter("worker:*"):
+        count += 1
+    return {"status": "ok", "active_sessions": count}
 
 
 @app.get("/metrics")
 async def get_metrics():
-    active_sessions = [
-        session.usage.summary() for session in session_mgr._sessions.values()
-    ]
+    redis_client = await get_redis()
+
+    # Collect completed session metrics from Redis
+    completed = []
+    async for key in redis_client.scan_iter("metrics:*"):
+        raw = await redis_client.get(key)
+        if raw:
+            completed.append(json.loads(raw))
+
+    # Count active workers
+    active_count = 0
+    async for _ in redis_client.scan_iter("worker:*"):
+        active_count += 1
 
     return {
-        **metrics.snapshot(),
-        "active_sessions": active_sessions,
-        "active_session_count": session_mgr.active_count(),
+        "completed_sessions": completed[-50:],
+        "active_session_count": active_count,
     }
 
 

@@ -23,9 +23,9 @@ from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openai.llm import OpenAILLMService
-from pipecat.transports.websocket.fastapi import (
-    FastAPIWebsocketParams,
-    FastAPIWebsocketTransport,
+from pipecat.transports.websocket.server import (
+    WebsocketServerParams,
+    WebsocketServerTransport,
 )
 
 from .metrics import LatencyTracker, MetricsCollector
@@ -35,14 +35,15 @@ SAMPLE_RATE = 16000
 CHANNELS = 1                                                                                                                                                        
 BYTES_PER_SAMPLE = 2  # 16-bit PCM
 
-async def create_pipeline(websocket, session_id: str, usage: UsageTracker, metrics: MetricsCollector):
+async def create_pipeline(host: str, port: int, session_id: str, usage: UsageTracker, metrics: MetricsCollector):
     """
     Create and run a Pipecat pipeline for a single websocket session
     """
     # transport is responsible for connecting the pipeline to the actual audio I/O
-    transport = FastAPIWebsocketTransport(
-        websocket,
-        FastAPIWebsocketParams(
+    transport = WebsocketServerTransport(
+        host=host,
+        port=port,
+        params=WebsocketServerParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
             serializer=ProtobufFrameSerializer()

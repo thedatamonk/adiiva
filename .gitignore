@@ -15,3 +15,5 @@ wheels/
 # log outputs
 logs
 
+
+node_modules/
