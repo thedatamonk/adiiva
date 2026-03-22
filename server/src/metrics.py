@@ -64,10 +64,6 @@ class LatencyTracker:
         self._metrics = metrics
         self._observer = UserBotLatencyObserver()
 
-        @self._observer.event_handler("on_latency_measured")
-        async def on_latency_measured(observer, ttfb_seconds):
-            await self._on_latency_measured(observer, ttfb_seconds)
-
         @self._observer.event_handler("on_latency_breakdown")
         async def on_latency_breakdown(observer, breakdown):
             await self._on_latency_breakdown(observer, breakdown)
@@ -76,14 +72,15 @@ class LatencyTracker:
     def observer(self) -> UserBotLatencyObserver:
         return self._observer
 
-    async def _on_latency_measured(self, observer, ttfb_seconds: float):
-        self._metrics.record_latency(self.session_id, ttfb_seconds)
-        logger.info(
-            f"[{self.session_id}] E2E TTFB: {ttfb_seconds * 1000:.0f}ms"
-        )
-
     async def _on_latency_breakdown(self, observer, breakdown: LatencyBreakdown):
-        parts = [f"[{self.session_id}] Turn latency"]
+        adjusted_latency = sum(ttfb.duration_secs for ttfb in breakdown.ttfb)
+        if breakdown.text_aggregation:
+            adjusted_latency += breakdown.text_aggregation.duration_secs
+        if breakdown.function_calls:
+            adjusted_latency += sum(fc.duration_secs for fc in breakdown.function_calls)
+        self._metrics.record_latency(self.session_id, adjusted_latency)
+
+        parts = [f"[{self.session_id}] Turn's latency breakdown"]
 
         if breakdown.user_turn_secs is not None:
             parts.append(f"user_turn={breakdown.user_turn_secs * 1000:.0f}ms")
