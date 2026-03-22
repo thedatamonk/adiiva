@@ -5,7 +5,8 @@ description = "Adiiva Take Home Assignment"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "pipecat-ai[webrtc,daily,silero,deepgram,openai,cartesia,runner,websocket]",
+    "pipecat-ai[webrtc,daily,silero,deepgram,openai,cartesia,runner,websocket,tracing]",
+    "opentelemetry-exporter-otlp-proto-http",
     "pipecat-ai-cli",
     "fastapi",
     "uvicorn[standard]",
