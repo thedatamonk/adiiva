@@ -32,15 +32,16 @@ Open `http://localhost:5173`, login with a demo user, and click Connect.
 adiiva/
 ├── server/                      # Backend — FastAPI + Pipecat
 │   ├── src/
-│   │   ├── app.py               # Gateway — auth, rate limiting, WebSocket endpoint
+│   │   ├── app.py               # Gateway — auth, rate limiting, WebSocket, admin endpoints
 │   │   ├── pipeline.py          # Pipecat pipeline (STT → LLM → TTS) + Play Audio tool
-│   │   ├── session_manager.py   # Maps WebSocket sessions to PipelineTask instances
+│   │   ├── session_manager.py   # Maps WebSocket sessions to metadata
+│   │   ├── observers.py         # LatencyBreakdownObserver — per-turn latency collection
+│   │   ├── metrics_store.py     # In-memory metrics store with SSE fan-out
 │   │   ├── auth.py              # JWT creation and verification
 │   │   ├── rate_limiter.py      # Redis-based per-user concurrency control
-│   │   ├── metrics.py           # Latency tracking + histogram computation
-│   │   ├── usage_tracker.py     # Per-session STT/LLM/TTS usage + cost estimation
 │   │   └── user_store.py        # Demo user store with bcrypt
 │   ├── static/
+│   │   ├── admin.html           # Admin dashboard — real-time session metrics via SSE
 │   │   └── poem.wav             # Pre-recorded audio for Play Audio tool
 │   ├── tests/
 │   ├── Dockerfile
@@ -49,7 +50,7 @@ adiiva/
 │
 ├── client/                      # Frontend — TypeScript + Vite + Nginx
 │   ├── src/
-│   │   ├── app.ts               # Login, WebSocket connect, audio, metrics panel
+│   │   ├── app.ts               # Login, WebSocket connect, audio playback
 │   │   └── style.css
 │   ├── nginx.conf               # Serves static files + reverse proxies to gateway
 │   ├── Dockerfile
@@ -127,21 +128,13 @@ The LLM keeps responses to 1-2 sentences, plain text only (no markdown — TTS w
 When the user asks for a poem or nursery rhyme, the LLM calls the `play_audio` tool. The gateway says "Sure, here's a poem for you" (via TTS filler speech), then streams raw PCM audio from a WAV file directly to the client — bypassing TTS entirely.
 
 ### Session Management
-`SessionManager` maps active WebSocket connections to `PipelineTask` instances. Tracks per-session usage (STT seconds, LLM tokens, TTS characters) and computes cost estimates. On disconnect, the session summary gets recorded for the `/metrics` endpoint.
+`SessionManager` maps active WebSocket connections to session metadata. On disconnect, cleanup happens automatically — rate limit slots are released, and the observer marks the session as completed in the metrics store.
 
 ### Observability
-- **`/metrics` endpoint** — Real-time latency histogram (min/max/mean/p50/p95/p99), active session usage, completed session history, per-session cost breakdown (STT/LLM/TTS)
-- **Metrics panel in the client** — Polls `/metrics` every 3 seconds after login, renders tables with live data
-- **Langfuse integration** (optional) — Set `ENABLE_TRACING=true` to export OpenTelemetry traces to Langfuse. Every pipeline processor (STT, LLM, TTS) emits spans with token counts and durations. Per-turn cost visibility on the Langfuse dashboard
-- **Latency tracking** — Pipecat's `UserBotLatencyObserver` measures E2E TTFB per turn and logs per-service breakdowns (e.g., `DeepgramSTT=150ms | OpenAILLM=400ms | CartesiaTTS=100ms`)
-
-### Cost Estimation
-Each session tracks:
-- **STT**: seconds of audio transcribed (Deepgram charges by duration)
-- **LLM**: prompt + completion tokens (OpenAI pricing)
-- **TTS**: characters synthesized (Cartesia pricing)
-
-Dollar costs are estimated using provider rate constants and exposed via `/metrics` and in the client's metrics panel.
+- **Admin dashboard (`/admin`)** — Real-time session metrics page powered by Server-Sent Events (SSE). Shows a latency histogram (min/max/mean/p50/p95/p99) across all sessions, and per-session collapsible cards with turn-by-turn breakdowns (STT TTFB, Smart Turn, LLM TTFB, TTS TTFB, wall clock, LLM tokens, TTS chars). Updates live as conversations happen — no polling.
+- **`LatencyBreakdownObserver`** — Custom Pipecat observer that collects per-turn latency data by watching pipeline frames (VAD, Metrics, BotStartedSpeaking). Writes to the shared `MetricsStore` and prints a summary table to the server console at session end.
+- **`/metrics` endpoint** — JSON snapshot of the same data: latency histogram, active sessions, and completed sessions. Useful for programmatic access or external monitoring.
+- **Langfuse integration** (optional) — Set `ENABLE_TRACING=true` to export OpenTelemetry traces to Langfuse. Every pipeline processor (STT, LLM, TTS) emits spans with token counts and durations.
 
 ## Environment Variables
 
@@ -164,7 +157,9 @@ Dollar costs are estimated using provider rate constants and exposed via `/metri
 | `/token` | POST | Issue JWT token (query params: `user_id`, `password`) |
 | `/ws/talk` | WebSocket | Voice AI session (query param: `token`) |
 | `/health` | GET | Health check with active session count |
-| `/metrics` | GET | Latency histograms, active/completed session usage, cost tracking |
+| `/metrics` | GET | JSON snapshot — latency histogram, active/completed sessions |
+| `/admin` | GET | Admin dashboard — real-time session metrics via SSE |
+| `/admin/events` | GET (SSE) | Server-Sent Events stream for the admin dashboard |
 
 ## Development
 

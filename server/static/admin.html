@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ADIIVA Admin — Session Metrics</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+    font-size: 13px;
+    padding: 20px;
+    min-height: 100vh;
+  }
+  h1 { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+  h2 { font-size: 14px; font-weight: 600; color: #9a9abf; margin-bottom: 10px; }
+
+  /* Connection status */
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #666;
+    flex-shrink: 0;
+  }
+  .status-dot.connected { background: #4caf50; }
+  .status-dot.disconnected { background: #f44336; }
+  .status-text { color: #888; font-size: 12px; }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 8px;
+  }
+  th, td {
+    text-align: right;
+    padding: 4px 10px;
+    white-space: nowrap;
+  }
+  th {
+    color: #9a9abf;
+    font-weight: 500;
+    border-bottom: 1px solid #2a2a4a;
+    font-size: 12px;
+  }
+  td {
+    border-bottom: 1px solid #1e1e38;
+  }
+  th:first-child, td:first-child { text-align: left; }
+
+  .totals-row td {
+    border-top: 1px solid #2a2a4a;
+    color: #9a9abf;
+    font-size: 12px;
+  }
+
+  /* Sections */
+  .section {
+    background: #16213e;
+    border: 1px solid #2a2a4a;
+    border-radius: 6px;
+    padding: 16px;
+    margin-bottom: 20px;
+  }
+
+  .empty-msg {
+    color: #666;
+    padding: 12px 0;
+  }
+
+  /* Session cards */
+  .session-card {
+    background: #0f1a30;
+    border: 1px solid #2a2a4a;
+    border-radius: 4px;
+    margin-bottom: 8px;
+  }
+  .session-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .session-header:hover { background: #162040; }
+  .session-arrow {
+    color: #666;
+    font-size: 10px;
+    width: 12px;
+    flex-shrink: 0;
+  }
+  .session-id { color: #7aa2f7; }
+  .session-user { color: #9a9abf; }
+  .session-status {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .session-status.active { background: #4caf50; }
+  .session-status.completed { background: #666; }
+  .session-turns-count { color: #666; margin-left: auto; }
+  .session-time { color: #555; font-size: 11px; }
+  .session-body {
+    display: none;
+    padding: 8px 12px 12px;
+    border-top: 1px solid #1e1e38;
+  }
+  .session-body.open { display: block; }
+</style>
+</head>
+<body>
+
+<div class="status-bar">
+  <h1>ADIIVA Admin</h1>
+  <div class="status-dot" id="statusDot"></div>
+  <span class="status-text" id="statusText">Connecting...</span>
+</div>
+
+<div class="section">
+  <h2>Latency Histogram</h2>
+  <div id="histogram"></div>
+</div>
+
+<div class="section">
+  <h2>Sessions</h2>
+  <div id="sessions"></div>
+</div>
+
+<script>
+// ── Formatting ──────────────────────────────────────────
+function fmtS(val) {
+  return val != null ? val.toFixed(3) + "s" : "-";
+}
+function fmtMs(val) {
+  return val != null ? Math.round(val) + "ms" : "-";
+}
+function fmtTokens(p, c) {
+  return (p != null && c != null) ? p + "/" + c : "-";
+}
+function fmtInt(val) {
+  return val != null ? String(val) : "-";
+}
+function fmtTime(val) {
+  if (!val) return "-";
+  const d = new Date(val);
+  return d.toLocaleTimeString();
+}
+
+// ── State ───────────────────────────────────────────────
+let sessions = {};  // session_id -> { user_id, started_at, ended_at, status, turns: [] }
+let openCards = new Set();
+
+// ── Histogram ───────────────────────────────────────────
+function allWallClocks() {
+  const vals = [];
+  for (const s of Object.values(sessions)) {
+    for (const t of s.turns) {
+      if (t.total_wall_clock != null) vals.push(t.total_wall_clock);
+    }
+  }
+  return vals.sort((a, b) => a - b);
+}
+
+function percentile(sorted, p) {
+  if (!sorted.length) return null;
+  const idx = (p / 100) * (sorted.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+}
+
+function renderHistogram() {
+  const el = document.getElementById("histogram");
+  const vals = allWallClocks();
+  if (!vals.length) {
+    el.innerHTML = '<div class="empty-msg">No data yet</div>';
+    return;
+  }
+  const sum = vals.reduce((a, b) => a + b, 0);
+  el.innerHTML = `<table>
+    <tr><th>Turns</th><th>Min</th><th>Max</th><th>Mean</th><th>p50</th><th>p95</th><th>p99</th></tr>
+    <tr>
+      <td>${vals.length}</td>
+      <td>${fmtS(vals[0])}</td>
+      <td>${fmtS(vals[vals.length - 1])}</td>
+      <td>${fmtS(sum / vals.length)}</td>
+      <td>${fmtS(percentile(vals, 50))}</td>
+      <td>${fmtS(percentile(vals, 95))}</td>
+      <td>${fmtS(percentile(vals, 99))}</td>
+    </tr>
+  </table>`;
+}
+
+// ── Sessions ────────────────────────────────────────────
+function sortedSessions() {
+  return Object.entries(sessions).sort((a, b) => {
+    // Active first
+    if (a[1].status === "active" && b[1].status !== "active") return -1;
+    if (b[1].status === "active" && a[1].status !== "active") return 1;
+    // Then reverse chronological (most recent first)
+    const ta = a[1].started_at ? new Date(a[1].started_at).getTime() : 0;
+    const tb = b[1].started_at ? new Date(b[1].started_at).getTime() : 0;
+    return tb - ta;
+  });
+}
+
+function renderSessions() {
+  const el = document.getElementById("sessions");
+  const sorted = sortedSessions();
+  if (!sorted.length) {
+    el.innerHTML = '<div class="empty-msg">No sessions yet</div>';
+    return;
+  }
+
+  let html = "";
+  for (const [sid, s] of sorted) {
+    const isOpen = openCards.has(sid);
+    const shortId = sid.substring(0, 8);
+    const statusClass = s.status === "active" ? "active" : "completed";
+    const turnCount = s.turns.length;
+
+    html += `<div class="session-card">
+      <div class="session-header" onclick="toggleCard('${sid}')">
+        <span class="session-arrow">${isOpen ? "▼" : "▶"}</span>
+        <span class="session-id">${shortId}</span>
+        <span class="session-user">${s.user_id || "-"}</span>
+        <span class="session-status ${statusClass}"></span>
+        <span class="session-turns-count">${turnCount} turn${turnCount !== 1 ? "s" : ""}</span>
+        <span class="session-time">${fmtTime(s.started_at)}${s.ended_at ? " — " + fmtTime(s.ended_at) : ""}</span>
+      </div>
+      <div class="session-body ${isOpen ? "open" : ""}">`;
+
+    if (turnCount > 0) {
+      html += `<table>
+        <tr>
+          <th>Turn</th><th>Total</th><th>STT TTFB</th><th>Smart Turn</th>
+          <th>LLM TTFB</th><th>TTS TTFB</th><th>LLM Tokens</th><th>TTS Chars</th>
+        </tr>`;
+      for (const t of s.turns) {
+        html += `<tr>
+          <td style="text-align:left">${t.turn_number}</td>
+          <td>${fmtS(t.total_wall_clock)}</td>
+          <td>${fmtS(t.stt_ttfb)}</td>
+          <td>${fmtMs(t.smart_turn_e2e_ms)}</td>
+          <td>${fmtS(t.llm_ttfb)}</td>
+          <td>${fmtS(t.tts_ttfb)}</td>
+          <td>${fmtTokens(t.llm_prompt_tokens, t.llm_completion_tokens)}</td>
+          <td>${fmtInt(t.tts_characters)}</td>
+        </tr>`;
+      }
+      // Totals row
+      const totPrompt = s.turns.reduce((a, t) => a + (t.llm_prompt_tokens || 0), 0);
+      const totCompletion = s.turns.reduce((a, t) => a + (t.llm_completion_tokens || 0), 0);
+      const totTts = s.turns.reduce((a, t) => a + (t.tts_characters || 0), 0);
+      const hasTokens = s.turns.some(t => t.llm_prompt_tokens != null);
+      const hasTts = s.turns.some(t => t.tts_characters != null);
+      html += `<tr class="totals-row">
+        <td style="text-align:left" colspan="6">Totals</td>
+        <td>${hasTokens ? totPrompt + "/" + totCompletion : "-"}</td>
+        <td>${hasTts ? String(totTts) : "-"}</td>
+      </tr>`;
+      html += `</table>`;
+    } else {
+      html += '<div class="empty-msg">No turns yet</div>';
+    }
+
+    html += `</div></div>`;
+  }
+  el.innerHTML = html;
+}
+
+function toggleCard(sid) {
+  if (openCards.has(sid)) {
+    openCards.delete(sid);
+  } else {
+    openCards.add(sid);
+  }
+  renderSessions();
+}
+
+// ── SSE ─────────────────────────────────────────────────
+function setStatus(connected) {
+  const dot = document.getElementById("statusDot");
+  const text = document.getElementById("statusText");
+  dot.className = "status-dot " + (connected ? "connected" : "disconnected");
+  text.textContent = connected ? "Connected" : "Disconnected";
+}
+
+function connect() {
+  const es = new EventSource("/admin/events");
+
+  es.onopen = () => setStatus(true);
+  es.onerror = () => setStatus(false);
+
+  es.addEventListener("snapshot", (e) => {
+    const data = JSON.parse(e.data);
+    sessions = {};
+
+    for (const s of (data.active_sessions || [])) {
+      sessions[s.session_id] = {
+        user_id: s.user_id,
+        started_at: s.started_at,
+        ended_at: null,
+        status: "active",
+        turns: s.turns || [],
+      };
+    }
+    for (const s of (data.completed_sessions || [])) {
+      sessions[s.session_id] = {
+        user_id: s.user_id,
+        started_at: s.started_at,
+        ended_at: s.ended_at,
+        status: "completed",
+        turns: s.turns || [],
+      };
+    }
+
+    renderHistogram();
+    renderSessions();
+  });
+
+  es.addEventListener("session_started", (e) => {
+    const data = JSON.parse(e.data);
+    sessions[data.session_id] = {
+      user_id: data.user_id,
+      started_at: data.started_at,
+      ended_at: null,
+      status: "active",
+      turns: [],
+    };
+    renderSessions();
+  });
+
+  es.addEventListener("turn_completed", (e) => {
+    const data = JSON.parse(e.data);
+    const s = sessions[data.session_id];
+    if (!s) return;
+    s.turns.push({
+      turn_number: data.turn_number,
+      stt_ttfb: data.stt_ttfb,
+      smart_turn_e2e_ms: data.smart_turn_e2e_ms,
+      llm_ttfb: data.llm_ttfb,
+      tts_ttfb: data.tts_ttfb,
+      total_wall_clock: data.total_wall_clock,
+      llm_prompt_tokens: data.llm_prompt_tokens,
+      llm_completion_tokens: data.llm_completion_tokens,
+      tts_characters: data.tts_characters,
+    });
+    renderHistogram();
+    renderSessions();
+  });
+
+  es.addEventListener("session_ended", (e) => {
+    const data = JSON.parse(e.data);
+    const s = sessions[data.session_id];
+    if (!s) return;
+    s.status = "completed";
+    s.ended_at = data.ended_at;
+    renderSessions();
+  });
+}
+
+// ── Init ────────────────────────────────────────────────
+renderHistogram();
+renderSessions();
+connect();
+</script>
+</body>
+</html>

@@ -8,36 +8,38 @@ import wave
 from pathlib import Path
 
 from loguru import logger
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from pipecat.utils.tracing.setup import setup_tracing
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import \
+    OTLPSpanExporter
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
+from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
+from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import \
+    LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMRunFrame, OutputAudioRawFrame, MetricsFrame, InputAudioRawFrame, TTSSpeakFrame
+from pipecat.frames.frames import (LLMRunFrame, OutputAudioRawFrame,
+                                   TTSSpeakFrame)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
-    LLMContextAggregatorPair,
-    LLMUserAggregatorParams,
-)
+    LLMContextAggregatorPair, LLMUserAggregatorParams)
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openai.llm import OpenAILLMService
-from pipecat.transports.websocket.fastapi import (
-    FastAPIWebsocketParams,
-    FastAPIWebsocketTransport,
-)
+from pipecat.transports.websocket.fastapi import (FastAPIWebsocketParams,
+                                                  FastAPIWebsocketTransport)
+from pipecat.turns.user_start import (TranscriptionUserTurnStartStrategy,
+                                      VADUserTurnStartStrategy)
+from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.utils.tracing.setup import setup_tracing
+from pipecat.audio.vad.vad_analyzer import VADParams
 
-from .metrics import LatencyTracker, MetricsCollector
-from .usage_tracker import UsageTracker
-from dotenv import load_dotenv
-
-
-load_dotenv(override=True)
+from .metrics_store import MetricsStore
+from .observers import LatencyBreakdownObserver
 
 IS_TRACING_ENABLED = bool(os.getenv("ENABLE_TRACING"))
 
@@ -56,11 +58,10 @@ if IS_TRACING_ENABLED:
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
-BYTES_PER_SAMPLE = 2  # 16-bit PCM
 POEM_WAV_PATH = Path(__file__).resolve().parent.parent / "static" / "poem.wav"
 AUDIO_CHUNK_SIZE = 16000
 
-async def create_pipeline(websocket, session_id: str, usage: UsageTracker, metrics: MetricsCollector):
+async def create_pipeline(websocket, session_id: str, store: MetricsStore):
     """
     Create and run a Pipecat pipeline for a single websocket session
     """
@@ -70,7 +71,10 @@ async def create_pipeline(websocket, session_id: str, usage: UsageTracker, metri
         FastAPIWebsocketParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            serializer=ProtobufFrameSerializer()
+            serializer=ProtobufFrameSerializer(),
+            vad_analyzer = SileroVADAnalyzer(
+                params=VADParams(start_secs=0.2, stop_secs=0.5)
+            ),
         )
     )
 
@@ -97,6 +101,9 @@ async def create_pipeline(websocket, session_id: str, usage: UsageTracker, metri
             ),
         )
     )
+
+    smart_turn_params = SmartTurnParams(stop_secs=1.5, pre_speech_ms=0.0)
+    turn_analyzer = LocalSmartTurnAnalyzerV3(params=smart_turn_params)
 
     # Play Audio tool — reads a WAV file and sends raw audio frames to client
     async def play_audio_handler(params: FunctionCallParams):
@@ -148,7 +155,14 @@ async def create_pipeline(websocket, session_id: str, usage: UsageTracker, metri
 
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+        user_params=LLMUserAggregatorParams(
+            user_turn_strategies=UserTurnStrategies(
+                start=[VADUserTurnStartStrategy(), TranscriptionUserTurnStartStrategy()],
+                stop=[TurnAnalyzerUserTurnStopStrategy(turn_analyzer=turn_analyzer)],
+            ),
+            user_turn_stop_timeout=2.0,
+            user_idle_timeout=5.0,
+        ),
     )
 
     pipeline = Pipeline(
@@ -168,28 +182,13 @@ async def create_pipeline(websocket, session_id: str, usage: UsageTracker, metri
         params=PipelineParams(
             enable_metrics=True,         # performance metrics
             enable_usage_metrics=True,   # usage metrics
+            observers=[LatencyBreakdownObserver(session_id, store)]
         ),
         enable_tracing=IS_TRACING_ENABLED,
         conversation_id=session_id,
         additional_span_attributes={"langfuse.session_id": session_id}
     )
 
-    task.add_reached_downstream_filter((MetricsFrame, InputAudioRawFrame))
-
-    latency = LatencyTracker(session_id, metrics)
-    task.add_observer(latency.observer)
-
-    # Usage tracking
-    @task.event_handler("on_frame_reached_downstream")
-    async def on_frame_downstream(task, frame):
-        if isinstance(frame, MetricsFrame):
-            usage.process_metrics(frame.data)
-        elif isinstance(frame, InputAudioRawFrame):
-            # Calculate STT seconds from raw audio
-            num_bytes = len(frame.audio)
-            seconds = num_bytes / (SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE)
-            usage.add_stt_usage(seconds)
-    
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, websocket):
         logger.info(f"[{session_id}] Client connected")
@@ -210,5 +209,3 @@ async def create_pipeline(websocket, session_id: str, usage: UsageTracker, metri
     # Pipecat doesn't handle sigint (Ctrl + C) as it will be done by FastAPI
     runner = PipelineRunner(handle_sigint=False)
     await runner.run(task)
-
-    return usage
