@@ -4,7 +4,6 @@ Wrapper around the bot.py code (https://github.com/pipecat-ai/pipecat/blob/main/
 
 import asyncio
 import os
-import struct
 import wave
 from pathlib import Path
 
@@ -59,7 +58,7 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 BYTES_PER_SAMPLE = 2  # 16-bit PCM
 POEM_WAV_PATH = Path(__file__).resolve().parent.parent / "static" / "poem.wav"
-AUDIO_CHUNK_SIZE = 16000  # ~0.5s of audio per frame at 16kHz mono 16-bit
+AUDIO_CHUNK_SIZE = 16000
 
 async def create_pipeline(websocket, session_id: str, usage: UsageTracker, metrics: MetricsCollector):
     """
@@ -84,7 +83,6 @@ async def create_pipeline(websocket, session_id: str, usage: UsageTracker, metri
         ),
     )
 
-    # TODO: We need to tell when the LLM should call this tool
     llm = OpenAILLMService(
         api_key=os.getenv("OPENAI_API_KEY"),
         settings=OpenAILLMService.Settings(
