@@ -4,6 +4,12 @@ A high-concurrency, multi-user Voice AI Gateway. Users authenticate via JWT, con
 
 Built with FastAPI, Redis, and a TypeScript client served via Nginx. Everything runs with one command via Docker Compose.
 
+<p align="center">
+  <a href="https://drive.google.com/file/d/11nMPAy2MkXq5FKFlB9RtiYsBVRrZvKYV/view?usp=drive_link">
+    <h3 align="center">Watch the demo</h3>
+  </a>
+</p>
+
 ## Quick Start
 
 ```bash
