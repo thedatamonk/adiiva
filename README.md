@@ -228,4 +228,10 @@ The hot path is: audio in → STT → LLM → TTS → audio out.
 The [current limitations](#current-limitations) are addressed by separating the gateway from pipeline workers:
 - The gateway becomes a lightweight auth/routing service.
 - Pipeline workers are standalone processes, each running one Pipecat session. The gateway returns a direct WebSocket URL to the client, taking itself out of the audio path entirely.
-- Workers and gateway can scale independently.
+- Doing this we can horizontally scale the # of workers by adding more nodes. The gateway acts as a router.
+- To avoid making gateway as a single point of failure, we need to run multiple instances of the gateway service behind the load balancer.
+- A scheduler (K8s, Nomad) handles worker placement. Tracks resource utilization per node and decides where to spawn the next worker.
+- Auto-scale based on active worker count in Redis or node CPU. For scale-down, drain gracefully. Stop routing new sessions to a node but let live calls finish.
+- Redis is a single point of failure at this scale. We will also have to cluster it or add a replica for failover.
+- Workers on different nodes need to push metrics to a central store (Redis, Prometheus, or OTel) since the current in-memory metrics store won't work across nodes.
+
